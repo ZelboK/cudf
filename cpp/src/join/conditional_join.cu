@@ -28,6 +28,7 @@
 #include <join/join_common_utils.cuh>
 #include <join/join_common_utils.hpp>
 
+#include <memory>
 #include <rmm/cuda_stream_view.hpp>
 
 #include <optional>
@@ -190,6 +191,103 @@ conditional_join(table_view const& left,
   }
   return join_indices;
 }
+
+std::unique_ptr<rmm::device_uvector<size_type>>
+conditional_join_semi(table_view const& left,
+                 table_view const& right,
+                 ast::expression const& binary_predicate,
+                 join_kind join_type,
+                 std::optional<std::size_t> output_size,
+                 rmm::cuda_stream_view stream,
+                 rmm::mr::device_memory_resource* mr)
+{
+  auto right_num_rows{right.num_rows()};
+  auto left_num_rows{left.num_rows()};
+  if (right_num_rows == 0) {
+    switch (join_type) {
+      case join_kind::LEFT_ANTI_JOIN:
+        return std::make_unique<rmm::device_uvector<size_type>>(left_num_rows, stream, mr);
+      case join_kind::LEFT_SEMI_JOIN:
+        return std::make_unique<rmm::device_uvector<size_type>>(0, stream, mr);
+      default: CUDF_FAIL("Invalid join kind."); break;
+    }
+  } else if (left_num_rows == 0) {
+    switch (join_type) {
+      case join_kind::LEFT_ANTI_JOIN:
+      case join_kind::LEFT_SEMI_JOIN:
+        return std::make_unique<rmm::device_uvector<size_type>>(0, stream, mr);
+      default: CUDF_FAIL("Invalid join kind."); break;
+    }
+  }
+
+  auto const has_nulls = binary_predicate.may_evaluate_null(left, right, stream);
+
+  auto const parser =
+    ast::detail::expression_parser{binary_predicate, left, right, has_nulls, stream, mr};
+  CUDF_EXPECTS(parser.output_type().id() == type_id::BOOL8,
+               "The expression must produce a boolean output.");
+
+  auto left_table  = table_device_view::create(left, stream);
+  auto right_table = table_device_view::create(right, stream);
+
+  auto swap_tables = (join_type == join_kind::INNER_JOIN) && (right_num_rows > left_num_rows);
+  detail::grid_1d const config(swap_tables ? right_num_rows : left_num_rows,
+                               DEFAULT_JOIN_BLOCK_SIZE);
+  auto const shmem_size_per_block = parser.shmem_per_thread * config.num_threads_per_block;
+  join_kind const kernel_join_type =
+    join_type == join_kind::FULL_JOIN ? join_kind::LEFT_JOIN : join_type;
+
+  cudf::size_type join_size = left_num_rows;
+  
+  if (join_size == 0) {
+    return std::make_unique<rmm::device_uvector<size_type>>(0, stream, mr));
+  }
+
+  rmm::device_scalar<size_type> write_index(0, stream);
+
+  auto left_indices  = std::make_unique<rmm::device_uvector<size_type>>(join_size, stream, mr);
+  auto right_indices = std::make_unique<rmm::device_uvector<size_type>>(join_size, stream, mr);
+
+  auto const& join_output_l = left_indices->data();
+  auto const& join_output_r = right_indices->data();
+  if (has_nulls) {
+    conditional_join<DEFAULT_JOIN_BLOCK_SIZE, DEFAULT_JOIN_CACHE_SIZE, true>
+      <<<config.num_blocks, config.num_threads_per_block, shmem_size_per_block, stream.value()>>>(
+        *left_table,
+        *right_table,
+        kernel_join_type,
+        join_output_l,
+        join_output_r,
+        write_index.data(),
+        parser.device_expression_data,
+        join_size,
+        swap_tables);
+  } else {
+    conditional_join<DEFAULT_JOIN_BLOCK_SIZE, DEFAULT_JOIN_CACHE_SIZE, false>
+      <<<config.num_blocks, config.num_threads_per_block, shmem_size_per_block, stream.value()>>>(
+        *left_table,
+        *right_table,
+        kernel_join_type,
+        join_output_l,
+        join_output_r,
+        write_index.data(),
+        parser.device_expression_data,
+        join_size,
+        swap_tables);
+  }
+
+  auto join_indices = std::pair(std::move(left_indices), std::move(right_indices));
+
+  // For full joins, get the indices in the right table that were not joined to
+  // by any row in the left table.
+  if (join_type == join_kind::FULL_JOIN) {
+    auto complement_indices = detail::get_left_join_indices_complement(
+      join_indices.second, left_num_rows, right_num_rows, stream, mr);
+    join_indices = detail::concatenate_vector_pairs(join_indices, complement_indices, stream);
+  }
+  return join_indices;
+}
+
 
 std::size_t compute_conditional_join_output_size(table_view const& left,
                                                  table_view const& right,
