@@ -287,7 +287,18 @@ __inline__ __device__ void add_pair_to_cache(size_type const first,
   joined_shared_r[my_current_idx] = second;
 }
 
-template <int num_warps, cudf::size_type output_cache_size>
+__inline__ __device__ void add_left_to_cache(size_type const first,
+                                             size_type const second,
+                                             size_type* current_idx_shared,
+                                             int const warp_id,
+                                             size_type* joined_shared_l)
+{
+  size_type my_current_idx{atomicAdd(current_idx_shared + warp_id, size_type(1))};
+
+  joined_shared_l[my_current_idx] = first;
+}
+
+template <int num_warps, cudf::size_type output_cache_size, bool both = true>
 __device__ void flush_output_cache(unsigned int const activemask,
                                    cudf::size_type const max_size,
                                    int const warp_id,
@@ -317,7 +328,7 @@ __device__ void flush_output_cache(unsigned int const activemask,
     cudf::size_type thread_offset = output_offset + shared_out_idx;
     if (thread_offset < max_size) {
       join_output_l[thread_offset] = join_shared_l[warp_id][shared_out_idx];
-      join_output_r[thread_offset] = join_shared_r[warp_id][shared_out_idx];
+      if constexpr (both) { join_output_r[thread_offset] = join_shared_r[warp_id][shared_out_idx]; }
     }
   }
 }
