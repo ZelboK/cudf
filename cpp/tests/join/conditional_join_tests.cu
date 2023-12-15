@@ -697,6 +697,7 @@ struct ConditionalJoinSingleReturnTest : public ConditionalJoinTest<T> {
    * the provided predicate and verify that the outputs match the expected
    * outputs (up to order).
    */
+
   void test(ColumnVector<T> left_data,
             ColumnVector<T> right_data,
             cudf::ast::operation predicate,
@@ -710,15 +711,25 @@ struct ConditionalJoinSingleReturnTest : public ConditionalJoinTest<T> {
     auto result = this->join(left, right, predicate);
     std::vector<cudf::size_type> resulting_indices;
     for (size_t i = 0; i < result->size(); ++i) {
-      // Note: Not trying to be terribly efficient here since these tests are
-      // small, otherwise a batch copy to host before constructing the tuples
-      // would be important.
       resulting_indices.push_back(result->element(i, cudf::get_default_stream()));
     }
     std::sort(resulting_indices.begin(), resulting_indices.end());
     std::sort(expected_outputs.begin(), expected_outputs.end());
     EXPECT_TRUE(
       std::equal(resulting_indices.begin(), resulting_indices.end(), expected_outputs.begin()));
+
+    // Printing the expected and resulting indices
+    std::cout << "Expected Outputs: ";
+    for (const auto& val : expected_outputs) {
+      std::cout << val << " ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "Resulting Indices: ";
+    for (const auto& val : resulting_indices) {
+      std::cout << val << " ";
+    }
+    std::cout << std::endl;
   }
 
   void _compare_to_hash_join(std::unique_ptr<rmm::device_uvector<cudf::size_type>> const& result,

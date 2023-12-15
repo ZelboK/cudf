@@ -328,7 +328,7 @@ __global__ void conditional_join_semi(
       auto const do_flush   = current_idx_shared[warp_id] + detail::warp_size >= output_cache_size;
       auto const flush_mask = __ballot_sync(activemask, do_flush);
       if (do_flush) {
-        flush_output_cache<num_warps, output_cache_size>(flush_mask,
+        flush_output_cache<num_warps, output_cache_size, false>(flush_mask,
                                                          max_size,
                                                          warp_id,
                                                          lane_id,

@@ -115,16 +115,7 @@ std::unique_ptr<rmm::device_uvector<size_type>> conditional_join_semi(
         swap_tables);
   }
 
-  auto join_indices = std::pair(std::move(left_indices), std::move(right_indices));
-
-  // For full joins, get the indices in the right table that were not joined to
-  // by any row in the left table.
-  if (join_type == join_kind::FULL_JOIN) {
-    auto complement_indices = detail::get_left_join_indices_complement(
-      join_indices.second, left_num_rows, right_num_rows, stream, mr);
-    join_indices = detail::concatenate_vector_pairs(join_indices, complement_indices, stream);
-  }
-  return join_indices;
+  return left_indices;
 }
 
 std::pair<std::unique_ptr<rmm::device_uvector<size_type>>,
